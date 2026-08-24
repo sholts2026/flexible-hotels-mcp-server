@@ -1,0 +1,12 @@
+# Railway deploy config — https://docs.railway.com/reference/config-as-code
+# Railway auto-detects the Dockerfile in this repo and builds with it.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
