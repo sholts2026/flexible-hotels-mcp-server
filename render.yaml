@@ -1,0 +1,31 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# One-time setup:
+#   1. Push this repo to your own GitHub account (public or private).
+#   2. In the Render dashboard: New -> Blueprint -> select this repo.
+#   3. Render reads this file, creates the service, and asks you to fill in
+#      AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET (marked sync: false below,
+#      so they're entered securely in the dashboard, never committed to git).
+#   4. Click "Apply" — Render builds the Dockerfile and gives you a public URL
+#      like https://flexible-hotels-mcp-server.onrender.com
+#   5. Use https://<that-url>/mcp as the remote MCP server URL in your AI client.
+#
+# Free tier: no credit card required, but the service sleeps after 15 minutes
+# of inactivity (first request after sleeping takes ~30-60s to wake up).
+
+services:
+  - type: web
+    name: flexible-hotels-mcp-server
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: AMADEUS_CLIENT_ID
+        sync: false
+      - key: AMADEUS_CLIENT_SECRET
+        sync: false
+      - key: AMADEUS_ENV
+        value: test
+      - key: TRANSPORT
+        value: http
+    healthCheckPath: /healthz
