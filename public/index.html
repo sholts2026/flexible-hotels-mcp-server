@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>חיפוש מלונות בתאריכים גמישים</title>
+<style>
+  :root {
+    --bg: #0f1720;
+    --panel: #17222f;
+    --panel-2: #1e2c3d;
+    --text: #eef3f8;
+    --muted: #9fb0c3;
+    --accent: #3ea6ff;
+    --accent-2: #2fd3a3;
+    --danger: #ff6b6b;
+    --border: #2a3a4d;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Heebo", "Arial Hebrew", Tahoma, Arial, sans-serif;
+    min-height: 100%;
+  }
+  .wrap {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 28px 18px 60px;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+  header h1 {
+    font-size: 1.7rem;
+    margin: 0 0 8px;
+  }
+  header p {
+    color: var(--muted);
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+  }
+  .mode-banner {
+    display: none;
+    margin: 14px auto 0;
+    max-width: 640px;
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 0.88rem;
+    text-align: center;
+  }
+  .mode-banner.link_only {
+    display: block;
+    background: rgba(62, 166, 255, 0.12);
+    border: 1px solid rgba(62, 166, 255, 0.35);
+    color: #bfe0ff;
+  }
+  .mode-banner.priced {
+    display: block;
+    background: rgba(47, 211, 163, 0.1);
+    border: 1px solid rgba(47, 211, 163, 0.3);
+    color: #b9f3e2;
+  }
+
+  form.search {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    align-items: end;
+  }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field.wide { grid-column: span 2; }
+  .field label { font-size: 0.82rem; color: var(--muted); }
+  .field input {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 0.95rem;
+    width: 100%;
+  }
+  .field input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .search-btn {
+    grid-column: 1 / -1;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    border: none;
+    border-radius: 10px;
+    color: #06131d;
+    font-weight: 700;
+    font-size: 1rem;
+    padding: 13px 18px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  .search-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .search-btn:hover:not(:disabled) { filter: brightness(1.08); }
+
+  .status {
+    margin-top: 22px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  .status.error { color: var(--danger); }
+
+  .summary {
+    margin: 22px 0 6px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .results {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card .name {
+    font-weight: 700;
+    font-size: 1.02rem;
+    line-height: 1.35;
+  }
+  .card .meta {
+    color: var(--muted);
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  .card .price {
+    margin-top: 4px;
+    font-size: 1.3rem;
+    font-weight: 800;
+    color: var(--accent-2);
+  }
+  .card .price small { font-size: 0.7rem; color: var(--muted); font-weight: 500; }
+  .card .stars { color: #ffd166; font-size: 0.9rem; }
+  .card a.book {
+    margin-top: 8px;
+    display: inline-block;
+    text-align: center;
+    background: var(--accent);
+    color: #06131d;
+    text-decoration: none;
+    font-weight: 700;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+  .card a.book:hover { filter: brightness(1.08); }
+
+  footer {
+    margin-top: 40px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.7;
+  }
+
+  @media (max-width: 720px) {
+    form.search { grid-template-columns: repeat(2, 1fr); }
+    .field.wide { grid-column: span 2; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🏨 חיפוש מלונות בתאריכים גמישים</h1>
+      <p>יש לך מספר לילות בראש אבל לא תאריך מדויק? תבחר יעד וטווח תאריכים אפשרי, והמערכת תבדוק את כל התאריכים בטווח ותציג את הזול ביותר.</p>
+      <div id="modeBanner" class="mode-banner"></div>
+    </header>
+
+    <form class="search" id="searchForm">
+      <div class="field wide">
+        <label for="destination">יעד</label>
+        <input id="destination" name="destination" type="text" placeholder="לדוגמה: תל אביב, פריז, ברצלונה" required />
+      </div>
+      <div class="field">
+        <label for="nights">מספר לילות</label>
+        <input id="nights" name="nights" type="number" min="1" max="28" value="3" required />
+      </div>
+      <div class="field">
+        <label for="adults">מבוגרים</label>
+        <input id="adults" name="adults" type="number" min="1" max="10" value="2" required />
+      </div>
+
+      <div class="field">
+        <label for="earliest">מהתאריך</label>
+        <input id="earliest" name="earliest_check_in" type="date" required />
+      </div>
+      <div class="field">
+        <label for="latest">עד תאריך</label>
+        <input id="latest" name="latest_check_in" type="date" required />
+      </div>
+      <div class="field">
+        <label for="rooms">חדרים</label>
+        <input id="rooms" name="room_quantity" type="number" min="1" max="8" value="1" required />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <div style="color:var(--muted); font-size:0.78rem; padding-top:8px;">טווח מרבי: <span id="maxWindow">30</span> ימים</div>
+      </div>
+
+      <button class="search-btn" type="submit">חפש מלונות</button>
+    </form>
+
+    <div id="status" class="status" style="display:none;"></div>
+    <div id="summary" class="summary" style="display:none;"></div>
+    <div id="results" class="results"></div>
+
+    <footer>
+      זהו כלי השוואת מחירים בלבד — כל הזמנה מתבצעת ישירות באתר בית המלון/Booking.com דרך הקישור, ואנחנו לא גובים תשלום כאן.<br />
+      מופעל על ידי StayAPI (Booking.com). ניתן להשתמש בשרת הזה גם דרך עוזרי AI (MCP) בכתובת <code>/mcp</code>.
+    </footer>
+  </div>
+
+<script>
+(function () {
+  const form = document.getElementById('searchForm');
+  const statusEl = document.getElementById('status');
+  const summaryEl = document.getElementById('summary');
+  const resultsEl = document.getElementById('results');
+  const modeBanner = document.getElementById('modeBanner');
+  const earliestInput = document.getElementById('earliest');
+  const latestInput = document.getElementById('latest');
+  const maxWindowEl = document.getElementById('maxWindow');
+
+  function toISODate(d) {
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Sensible defaults: search starting a week from today, across a 3-week window.
+  const today = new Date();
+  const defaultEarliest = new Date(today);
+  defaultEarliest.setDate(defaultEarliest.getDate() + 7);
+  const defaultLatest = new Date(today);
+  defaultLatest.setDate(defaultLatest.getDate() + 28);
+  earliestInput.value = toISODate(defaultEarliest);
+  latestInput.value = toISODate(defaultLatest);
+  earliestInput.min = toISODate(today);
+  latestInput.min = toISODate(today);
+
+  fetch('/api/config')
+    .then((r) => r.json())
+    .then((cfg) => {
+      if (cfg.mode === 'link_only') {
+        modeBanner.className = 'mode-banner link_only';
+        modeBanner.textContent = 'מצב חינמי: מוצגים קישורי חיפוש לכל תאריך, ללא השוואת מחירים אוטומטית.';
+      } else if (cfg.mode === 'priced') {
+        modeBanner.className = 'mode-banner priced';
+        modeBanner.textContent = 'מחירים חיים מוצגים ישירות מ-Booking.com, ממוינים מהזול ליקר.';
+      }
+    })
+    .catch(() => {});
+
+  fetch('/api/limits')
+    .then((r) => r.json())
+    .then((cfg) => {
+      if (cfg.maxWindowDays) {
+        maxWindowEl.textContent = cfg.maxWindowDays;
+        latestInput.max = null;
+      }
+    })
+    .catch(() => {});
+
+  function showStatus(text, isError) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = text;
+    statusEl.className = 'status' + (isError ? ' error' : '');
+  }
+
+  function hideStatus() {
+    statusEl.style.display = 'none';
+  }
+
+  function starString(n) {
+    if (!n) return '';
+    const full = Math.round(n);
+    return '★'.repeat(Math.max(0, Math.min(5, full)));
+  }
+
+  function renderResults(data) {
+    resultsEl.innerHTML = '';
+    summaryEl.style.display = 'block';
+
+    if (!data.offers || data.offers.length === 0) {
+      summaryEl.textContent = '';
+      showStatus('לא נמצאו תוצאות בטווח התאריכים הזה. נסו טווח רחב יותר או יעד אחר.', false);
+      return;
+    }
+
+    hideStatus();
+    const skippedNote = data.datesSkipped && data.datesSkipped.length
+      ? ` (${data.datesSkipped.length} מתוך ${data.datesScanned} תאריכים לא החזירו תוצאה)`
+      : '';
+    summaryEl.textContent = data.mode === 'priced'
+      ? `נמצאו ${data.offers.length} הצעות, ממוינות מהזול ליקר${skippedNote}`
+      : `${data.offers.length} קישורי חיפוש לפי תאריך${skippedNote}`;
+
+    data.offers.forEach((offer) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = offer.hotelName || `${offer.checkInDate} → ${offer.checkOutDate}`;
+      card.appendChild(name);
+
+      if (offer.starRating) {
+        const stars = document.createElement('div');
+        stars.className = 'stars';
+        stars.textContent = starString(offer.starRating);
+        card.appendChild(stars);
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const reviewPart = offer.reviewScore
+        ? ` · ציון ${offer.reviewScore}${offer.reviewCount ? ` (${offer.reviewCount} ביקורות)` : ''}`
+        : '';
+      meta.textContent = `${offer.checkInDate} → ${offer.checkOutDate} · ${offer.nights} לילות${reviewPart}`;
+      card.appendChild(meta);
+
+      if (offer.address) {
+        const addr = document.createElement('div');
+        addr.className = 'meta';
+        addr.textContent = offer.address;
+        card.appendChild(addr);
+      }
+
+      if (offer.priceKnown && typeof offer.totalPrice === 'number') {
+        const price = document.createElement('div');
+        price.className = 'price';
+        price.innerHTML = `${offer.totalPrice.toFixed(0)} ${offer.currency || ''} <small>לכל השהייה</small>`;
+        card.appendChild(price);
+      }
+
+      const link = document.createElement('a');
+      link.className = 'book';
+      link.href = offer.bookingUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = offer.priceKnown ? 'הזמנה עכשיו' : 'ראה מחירים חיים';
+      card.appendChild(link);
+
+      resultsEl.appendChild(card);
+    });
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    resultsEl.innerHTML = '';
+    summaryEl.style.display = 'none';
+    showStatus('מחפש... זה יכול לקחת כמה שניות', false);
+
+    const params = new URLSearchParams({
+      destination: document.getElementById('destination').value.trim(),
+      nights: document.getElementById('nights').value,
+      earliest_check_in: earliestInput.value,
+      latest_check_in: latestInput.value,
+      adults: document.getElementById('adults').value,
+      room_quantity: document.getElementById('rooms').value,
+    });
+
+    const btn = form.querySelector('.search-btn');
+    btn.disabled = true;
+
+    fetch('/api/search?' + params.toString())
+      .then(async (r) => {
+        const body = await r.json();
+        if (!r.ok) {
+          throw new Error(body.error || 'שגיאה לא ידועה');
+        }
+        return body;
+      })
+      .then(renderResults)
+      .catch((err) => {
+        showStatus('שגיאה בחיפוש: ' + err.message, true);
+      })
+      .finally(() => {
+        btn.disabled = false;
+      });
+  });
+})();
+</script>
+</body>
+</html>
