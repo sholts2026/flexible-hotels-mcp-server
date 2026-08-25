@@ -3,12 +3,14 @@
 # One-time setup:
 #   1. Push this repo to your own GitHub account (public or private).
 #   2. In the Render dashboard: New -> Blueprint -> select this repo.
-#   3. Render reads this file, creates the service, and asks you to fill in
-#      AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET (marked sync: false below,
-#      so they're entered securely in the dashboard, never committed to git).
-#   4. Click "Apply" — Render builds the Dockerfile and gives you a public URL
+#   3. Click "Apply" — Render builds the Dockerfile and gives you a public URL
 #      like https://flexible-hotels-mcp-server.onrender.com
-#   5. Use https://<that-url>/mcp as the remote MCP server URL in your AI client.
+#   4. Use https://<that-url>/mcp as the remote MCP server URL in your AI client.
+#
+# No API key is required — the server runs fully in free "link-only" mode out of the
+# box. Optionally, set STAYAPI_KEY in the Render dashboard's Environment tab (a free
+# one-time 50-request trial key from https://stayapi.com, no credit card) to switch
+# to real, live, cheapest-first price comparison.
 #
 # Free tier: no credit card required, but the service sleeps after 15 minutes
 # of inactivity (first request after sleeping takes ~30-60s to wake up).
@@ -20,12 +22,8 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     envVars:
-      - key: AMADEUS_CLIENT_ID
+      - key: STAYAPI_KEY
         sync: false
-      - key: AMADEUS_CLIENT_SECRET
-        sync: false
-      - key: AMADEUS_ENV
-        value: test
       - key: TRANSPORT
         value: http
     healthCheckPath: /healthz
