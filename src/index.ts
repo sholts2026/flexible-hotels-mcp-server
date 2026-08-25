@@ -4,18 +4,21 @@
  *
  * MCP server that lets an AI agent search hotel offers by a NUMBER OF NIGHTS
  * across a flexible window of possible check-in dates, instead of one fixed
- * check-in/check-out date pair. Backed by the free Amadeus for Developers
- * self-service "test" environment (no credit card required).
+ * check-in/check-out date pair.
+ *
+ * Works out of the box with NO API key at all, in free "link-only" mode: it
+ * returns Booking.com search links per candidate date instead of live prices.
+ * Optionally, set STAYAPI_KEY (a free one-time 50-request trial key from
+ * https://stayapi.com, no credit card) to get real live prices per hotel per
+ * date instead, sorted cheapest first.
  *
  * This is an AFFILIATE tool, not a booking engine: it never collects payment details.
  * Every result includes a click-through link to the real hotel's listing (Booking.com
  * by default) where the guest completes the purchase, if they choose to at all.
  *
  * Tools:
- *  - flexible_hotels_resolve_city_code    resolve a city name to an IATA city code
- *  - flexible_hotels_list_hotels_in_city  list hotels (and hotelIds) in a city
- *  - flexible_hotels_search_flexible_offers  the core flexible-date search (includes a booking_url per offer)
- *  - flexible_hotels_get_offer_details    fetch fresh details for one offer
+ *  - flexible_hotels_resolve_destination      (optional) resolve/disambiguate a place name (priced mode only)
+ *  - flexible_hotels_search_flexible_offers   the core flexible-date search (includes a bookingUrl per result)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,76 +26,58 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 
-import { AmadeusClient } from "./services/amadeusClient.js";
-import { registerResolveCityTool } from "./tools/resolveCity.js";
-import { registerListHotelsTool } from "./tools/listHotels.js";
+import { StayApiClient } from "./services/stayApiClient.js";
+import { registerResolveDestinationTool } from "./tools/resolveDestination.js";
 import { registerSearchFlexibleOffersTool } from "./tools/searchFlexibleOffers.js";
-import { registerGetOfferDetailsTool } from "./tools/getOfferDetails.js";
 
 /**
- * Reads Amadeus credentials from the environment.
- *
- * For stdio (local, single-user) we fail fast with a clear message — there's a
- * human at a terminal right there to fix it. For http (a hosted, possibly
- * multi-tenant deployment) we deliberately do NOT crash-loop the process when
- * credentials are missing: the platform would just keep restarting it forever.
- * Instead the server boots normally so health checks pass, and every tool call
- * fails with a clear, actionable AmadeusApiError until real credentials are set
- * (e.g. via `railway variable set` / the Render dashboard) and the service redeploys.
+ * Reads the optional StayAPI key from the environment. Unlike the old Amadeus-based
+ * version, missing credentials are NOT an error — the server always boots and runs
+ * fully in free "link-only" mode when STAYAPI_KEY isn't set. This keeps a hosted,
+ * possibly multi-tenant deployment from crash-looping, and keeps the free-forever
+ * mode genuinely zero-setup.
  */
-function loadConfig(transport: "stdio" | "http") {
-  const clientId = process.env.AMADEUS_CLIENT_ID;
-  const clientSecret = process.env.AMADEUS_CLIENT_SECRET;
-  const missing = !clientId || !clientSecret;
-
-  if (missing && transport === "stdio") {
-    console.error(
-      "ERROR: AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET environment variables are required.\n" +
-        "Get a free key (no credit card) at https://developers.amadeus.com/register, then set them " +
-        "(e.g. in a .env file — see .env.example).",
-    );
-    process.exit(1);
+function loadStayApiClient(transport: "stdio" | "http"): StayApiClient | null {
+  const apiKey = process.env.STAYAPI_KEY;
+  if (!apiKey) {
+    const msg =
+      "INFO: STAYAPI_KEY is not set. Running in free link-only mode (Booking.com search links, " +
+      "no live price comparison). For real prices, get a free one-time-trial key (no credit card) " +
+      "at https://stayapi.com and set STAYAPI_KEY" +
+      (transport === "http" ? " in your hosting platform's environment settings." : " (see .env.example).");
+    console.error(msg);
+    return null;
   }
-  if (missing) {
-    console.error(
-      "WARNING: AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET are not set. The server will start and " +
-        "health checks will pass, but every tool call will fail until real credentials are configured " +
-        "(get a free key at https://developers.amadeus.com/register).",
-    );
-  }
-  const env = process.env.AMADEUS_ENV === "production" ? "production" : "test";
-  return { clientId: clientId ?? "", clientSecret: clientSecret ?? "", env: env as "test" | "production" };
+  return new StayApiClient(apiKey);
 }
 
-function buildServer(client: AmadeusClient): McpServer {
+function buildServer(client: StayApiClient | null): McpServer {
   const server = new McpServer({
     name: "flexible-hotels-mcp-server",
-    version: "1.0.0",
+    version: "2.0.0",
   });
 
-  registerResolveCityTool(server, client);
-  registerListHotelsTool(server, client);
+  registerResolveDestinationTool(server, client);
   registerSearchFlexibleOffersTool(server, client);
-  registerGetOfferDetailsTool(server, client);
 
   return server;
 }
 
-async function runStdio(client: AmadeusClient): Promise<void> {
+async function runStdio(client: StayApiClient | null): Promise<void> {
   const server = buildServer(client);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("flexible-hotels-mcp-server running via stdio");
 }
 
-async function runHttp(client: AmadeusClient): Promise<void> {
+async function runHttp(client: StayApiClient | null): Promise<void> {
   const app = express();
   app.use(express.json());
 
   // Plain health check for the hosting platform (Render/Railway) — separate from
   // the MCP endpoint itself, which only accepts POST per the streamable HTTP spec.
   app.get("/healthz", (_req, res) => {
-    res.status(200).json({ status: "ok", server: "flexible-hotels-mcp-server" });
+    res.status(200).json({ status: "ok", server: "flexible-hotels-mcp-server", mode: client ? "priced" : "link_only" });
   });
   app.get("/", (_req, res) => {
     res.status(200).send("flexible-hotels-mcp-server is running. MCP endpoint: POST /mcp");
@@ -118,8 +103,7 @@ async function runHttp(client: AmadeusClient): Promise<void> {
 
 async function main(): Promise<void> {
   const transport = process.env.TRANSPORT === "http" ? "http" : "stdio";
-  const config = loadConfig(transport);
-  const client = new AmadeusClient(config);
+  const client = loadStayApiClient(transport);
 
   if (transport === "http") {
     await runHttp(client);
