@@ -1,7 +1,7 @@
 {
   "name": "flexible-hotels-mcp-server",
   "version": "1.0.0",
-  "description": "MCP server for searching hotel offers by flexible date windows and number of nights (instead of fixed check-in/check-out dates), backed by the free Amadeus for Developers self-service API.",
+  "description": "MCP server for searching hotel offers by flexible date windows and number of nights (instead of fixed check-in/check-out dates). Works with no API key (free Booking.com links) or with an optional StayAPI key for real live prices.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
