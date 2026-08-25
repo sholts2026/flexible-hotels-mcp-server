@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AmadeusClient } from "../services/amadeusClient.js";
+import type { StayApiClient } from "../services/stayApiClient.js";
 import { searchFlexibleHotelOffers } from "../services/hotelSearch.js";
 import { formatFlexibleSearchMarkdown } from "../services/format.js";
 import { CHARACTER_LIMIT, MAX_WINDOW_DAYS } from "../constants.js";
@@ -9,49 +9,58 @@ import {
   type SearchFlexibleOffersInput,
 } from "../schemas/schemas.js";
 
-export function registerSearchFlexibleOffersTool(server: McpServer, client: AmadeusClient): void {
+export function registerSearchFlexibleOffersTool(server: McpServer, client: StayApiClient | null): void {
   server.registerTool(
     "flexible_hotels_search_flexible_offers",
     {
       title: "Search Hotel Offers by Number of Nights (Flexible Dates)",
-      description: `Find the cheapest hotel offers for a fixed NUMBER OF NIGHTS across a WINDOW of possible check-in
-dates, instead of a single fixed check-in/check-out date pair. This is the core tool of this server.
+      description: `Find the best hotel options for a fixed NUMBER OF NIGHTS across a WINDOW of possible check-in
+dates, instead of a single fixed check-in/check-out date pair. This is the core tool of this server, and it
+works with NO setup or API key required.
 
 For example: "3 nights in Tel Aviv, sometime between Sep 1 and Sep 20" is expressed as
 nights=3, earliest_check_in="2026-09-01", latest_check_in="2026-09-20". The tool scans every
-possible check-in date in that window (each implying checkout = check-in + nights), fetches real
-priced offers for each, and returns the cheapest options found, sorted by price — so the caller
-can see which exact dates are the best deal.
+possible check-in date in that window (each implying checkout = check-in + nights) and returns results
+sorted by date (or by price, when price data is available) — so the caller can see the options across the window.
 
 This does NOT search by a single fixed date — for that, just set earliest_check_in = latest_check_in.
-This is an AFFILIATE search tool: it never collects payment details or creates a booking. Each returned
-offer includes a bookingUrl — a link to the real hotel/OTA listing where the guest can complete the
-purchase themselves, if they choose to. Data comes from the Amadeus for Developers hotel API (free
-test/sandbox environment by default).
+This is an AFFILIATE search tool: it never collects payment details or creates a booking. Every result
+includes a bookingUrl — a link to Booking.com where the guest can see live prices and complete the purchase
+themselves, if they choose to.
+
+TWO MODES (automatic, based on server configuration):
+  - Free "link-only" mode (default, no setup needed): returns one Booking.com search link per candidate
+    date. No price comparison happens on our end — real prices appear after clicking through. Free forever,
+    no rate limits.
+  - "Priced" mode (only if the server operator configured a STAYAPI_KEY): fetches real live prices per
+    hotel per date via StayAPI, and returns results sorted cheapest-first. StayAPI's free trial is a
+    ONE-TIME quota of 50 requests total (not monthly) — this tool uses 1 request to resolve the destination
+    plus 1 request per candidate date scanned, so a wide date window can use up the trial quickly. Narrow
+    the window (fewer candidate dates) to conserve quota.
 
 Args:
-  - city_code (string): 3-letter IATA city code, e.g. "TLV" (use resolve_city_code to find it from a name)
+  - destination (string): free-text place name, e.g. "Tel Aviv", "Paris", "Barcelona" — no lookup needed first
   - nights (number): exact stay length in nights, 1-28
   - earliest_check_in / latest_check_in (YYYY-MM-DD): the flexible window of possible check-in dates,
     at most ${MAX_WINDOW_DAYS} days apart
-  - hotel_ids (string[], optional): restrict to specific Amadeus hotelIds (from list_hotels_in_city)
-  - max_hotels (number): if hotel_ids is omitted, how many hotels in the city to auto-check (default 15)
   - adults (number): guests per room (default 2)
   - room_quantity (number): rooms to book (default 1)
-  - currency (string, optional): 3-letter ISO currency code, e.g. "USD"
-  - max_results (number): how many offers to return, cheapest first (default 10)
+  - currency (string, optional): 3-letter ISO currency code, e.g. "USD" (priced mode only)
+  - max_hotels_per_date (number): priced mode only, how many hotels to consider per date (default 15)
+  - max_results (number): how many results to return (default 10)
   - response_format ('markdown' | 'json'): output format (default markdown)
 
 Returns:
   For JSON format: {
-    "cityCode": string, "nights": number, "earliestCheckIn": string, "latestCheckIn": string,
+    "destination": string, "mode": "priced" | "link_only", "nights": number,
+    "earliestCheckIn": string, "latestCheckIn": string,
     "datesScanned": number, "datesWithOffers": number,
     "datesSkipped": [{ "date": string, "reason": string }],
-    "hotelsConsidered": number,
-    "offers": [{ "offerId", "hotelId", "hotelName", "checkInDate", "checkOutDate", "nights",
-                  "currency", "totalPrice", "boardType", "roomDescription", "bookingUrl" }, ...],
-    "cheapest": <same shape as one offer, or null>,
-    "truncated": boolean
+    "offers": [{ "hotelName?", "checkInDate", "checkOutDate", "nights", "priceKnown",
+                  "currency?", "totalPrice?", "bookingUrl" }, ...],
+    "cheapest": <same shape as one offer, or null — only set in priced mode>,
+    "truncated": boolean,
+    "note": string
   }
 
 Examples:
@@ -62,8 +71,8 @@ Examples:
 
 Error Handling:
   - Returns an error if the date window exceeds ${MAX_WINDOW_DAYS} days — narrow it and retry
-  - Individual dates that error out (e.g. sandbox has no data) are listed in datesSkipped rather than
-    failing the whole search`,
+  - In priced mode, individual dates that error out are listed in datesSkipped rather than failing the
+    whole search`,
       inputSchema: SearchFlexibleOffersInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -74,33 +83,15 @@ Error Handling:
     },
     async (params: SearchFlexibleOffersInput) => {
       try {
-        let hotelIds = params.hotel_ids;
-        if (!hotelIds || hotelIds.length === 0) {
-          const hotels = await client.hotelsByCity(params.city_code);
-          if (hotels.length === 0) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    `No hotels found for city code "${params.city_code}". ` +
-                    `Double-check the code with flexible_hotels_resolve_city_code, or this city may have no coverage in the current environment.`,
-                },
-              ],
-            };
-          }
-          hotelIds = hotels.slice(0, params.max_hotels).map((h) => h.hotelId);
-        }
-
         const result = await searchFlexibleHotelOffers(client, {
-          cityCode: params.city_code,
+          destination: params.destination,
           nights: params.nights,
           earliestCheckIn: params.earliest_check_in,
           latestCheckIn: params.latest_check_in,
-          hotelIds,
           adults: params.adults,
           roomQuantity: params.room_quantity,
           currency: params.currency,
+          maxHotelsPerDate: params.max_hotels_per_date,
           maxResults: params.max_results,
         });
 
@@ -110,7 +101,7 @@ Error Handling:
             : formatFlexibleSearchMarkdown(result);
 
         if (text.length > CHARACTER_LIMIT) {
-          text = `${text.slice(0, CHARACTER_LIMIT)}\n\n_[response truncated at ${CHARACTER_LIMIT} characters — lower max_results or max_hotels for a shorter response]_`;
+          text = `${text.slice(0, CHARACTER_LIMIT)}\n\n_[response truncated at ${CHARACTER_LIMIT} characters — lower max_results for a shorter response]_`;
         }
 
         return { content: [{ type: "text", text }], structuredContent: result as unknown as Record<string, unknown> };
