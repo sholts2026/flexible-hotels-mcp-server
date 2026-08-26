@@ -21,7 +21,13 @@
  *    but this mode has no quota and never breaks.
  */
 
-import { MAX_WINDOW_DAYS, REQUEST_THROTTLE_MS, DESTINATION_CACHE_TTL_MS, PRICE_CACHE_TTL_MS } from "../constants.js";
+import {
+  MAX_WINDOW_DAYS,
+  REQUEST_THROTTLE_MS,
+  DESTINATION_CACHE_TTL_MS,
+  PRICE_CACHE_TTL_MS,
+  MAX_LIVE_PRICE_CALLS_PER_SEARCH,
+} from "../constants.js";
 import type { HotelOfferRoom, FlexibleSearchResult } from "../types.js";
 import type { StayApiClient } from "./stayApiClient.js";
 import { buildBookingDestinationUrl, buildBookingUrl, appendAffiliateId } from "./affiliateLink.js";
@@ -82,6 +88,24 @@ export function buildCandidateCheckInDates(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Picks up to `cap` dates out of `dates` (which must already be sorted), spread as evenly
+ * as possible across the full list — always including the first and last date when
+ * `cap >= 2` — so a capped search still gets real prices across the whole requested window
+ * instead of just clustering on its first few days. If the list already fits within the
+ * cap, every date is picked (no sampling needed).
+ */
+function selectSampledDates(dates: string[], cap: number): Set<string> {
+  if (dates.length <= cap) return new Set(dates);
+  if (cap <= 1) return new Set(dates.length ? [dates[0]] : []);
+  const picked = new Set<string>();
+  for (let i = 0; i < cap; i++) {
+    const idx = Math.round((i * (dates.length - 1)) / (cap - 1));
+    picked.add(dates[idx]);
+  }
+  return picked;
 }
 
 /** Recognizes StayAPI's "out of credits" / rate-limit style failures, e.g. "402 You've used all your free credits." */
@@ -218,6 +242,11 @@ async function searchWithStayApi(
   // would fail the exact same way — so stop attempting live calls for the rest of this
   // search (still checking cache first) instead of burning time hammering a dead key.
   let quotaExhausted = false;
+  // Bounds how many live calls one search can spend, no matter how wide the window is —
+  // see MAX_LIVE_PRICE_CALLS_PER_SEARCH's comment in constants.ts. Dates outside the
+  // sample still get a real booking link, just no on-site price.
+  const liveSampleDates = selectSampledDates(candidateDates, MAX_LIVE_PRICE_CALLS_PER_SEARCH);
+  const sampledOutCount = candidateDates.length - liveSampleDates.size;
 
   for (let i = 0; i < candidateDates.length; i++) {
     const checkInDate = candidateDates[i];
@@ -237,9 +266,11 @@ async function searchWithStayApi(
       params.maxHotelsPerDate,
     ].join("|");
 
-    if (quotaExhausted && peek(priceCacheKey) === undefined) {
-      // Already know this date can't be priced this search — skip straight to the
-      // graceful fallback below instead of attempting (and re-failing) a live call.
+    if ((quotaExhausted || !liveSampleDates.has(checkInDate)) && peek(priceCacheKey) === undefined) {
+      // Either this date already can't be priced this search (quota dead — skip straight
+      // to the fallback instead of re-failing a live call), or it's simply outside this
+      // search's sampling budget. Either way, if nobody has ever cached this exact date
+      // before we still fall back rather than spend a live call on it.
       allOffers.push(buildFallbackOffer(params, checkInDate, checkOutDate));
       fallbackDates.push(checkInDate);
       continue;
@@ -357,6 +388,9 @@ async function searchWithStayApi(
         : `${requestsSpent} live StayAPI request(s) spent (none of this search was cached yet).`,
       fallbackDates.length > 0
         ? `${fallbackDates.length} of ${candidateDates.length} date(s) couldn't be priced${quotaExhausted ? " (API quota appears exhausted)" : ""} and fell back to a plain booking link instead.`
+        : "",
+      !quotaExhausted && sampledOutCount > 0
+        ? `To keep quota usage bounded, only ${liveSampleDates.size} of ${candidateDates.length} dates (spread across the window) were checked for a live price this search; the others show a booking link instead.`
         : "",
     ]
       .filter(Boolean)
