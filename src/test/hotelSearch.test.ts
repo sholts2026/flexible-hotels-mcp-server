@@ -243,6 +243,44 @@ test("searchFlexibleHotelOffers (priced mode, quota exhausted) degrades graceful
   assert.match(result.note ?? "", /quota appears exhausted/);
 });
 
+test("searchFlexibleHotelOffers (priced mode) caps live calls per search and spreads the sample evenly across a wide window", async () => {
+  let searchCalls = 0;
+  const calledDates: string[] = [];
+  const client = {
+    resolveDestination: async (query: string) => ({ query, destId: 999, destType: "CITY", normalizedQuery: query, suggestions: [] }),
+    searchHotels: async ({ checkin }: { checkin: string }) => {
+      searchCalls++;
+      calledDates.push(checkin);
+      return [{ hotelId: "HCAP1", hotelName: "Cap Test Hotel", url: "https://www.booking.com/hotel/cap.html", minTotalPrice: 111, currencyCode: "USD" }];
+    },
+  } as unknown as StayApiClient;
+
+  // 21 candidate dates, well above MAX_LIVE_PRICE_CALLS_PER_SEARCH (10) — the search must
+  // still return one offer per date, but only 10 of them should ever hit the live API.
+  const result = await searchFlexibleHotelOffers(client, {
+    destination: "Big Window City",
+    nights: 1,
+    earliestCheckIn: "2026-12-01",
+    latestCheckIn: "2026-12-21",
+    adults: 2,
+    roomQuantity: 1,
+    maxHotelsPerDate: 15,
+    maxResults: 30,
+  });
+
+  assert.equal(result.datesScanned, 21);
+  assert.equal(result.offers.length, 21, "every candidate date still gets an offer, priced or not");
+  assert.equal(searchCalls, 10, "only the sampling cap's worth of live calls should be made");
+  const priced = result.offers.filter((o) => o.priceKnown);
+  const fallback = result.offers.filter((o) => !o.priceKnown);
+  assert.equal(priced.length, 10);
+  assert.equal(fallback.length, 11);
+  // The sample must include both ends of the window, not just the first 10 chronologically.
+  assert.ok(calledDates.includes("2026-12-01"), "should sample the earliest date");
+  assert.ok(calledDates.includes("2026-12-21"), "should sample the latest date");
+  assert.match(result.note ?? "", /only 10 of 21 dates.*were checked for a live price/);
+});
+
 test("searchFlexibleHotelOffers (priced mode) respects max_results and sets truncated", async () => {
   const client = fakeClient({
     "2026-09-01": 100,
