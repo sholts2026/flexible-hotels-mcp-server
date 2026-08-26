@@ -26,9 +26,11 @@ export const REQUEST_THROTTLE_MS = 200;
 export const DESTINATION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
- * How long a single date's hotel-price results stay cached. Real prices do drift over a
- * few hours, so this is much shorter than the destination cache — but it's what turns a
- * repeated or overlapping search (the same city + nearby dates, searched again by anyone)
- * from "another full round of API calls" into "instant and free."
+ * How long a single date's hotel-price results stay cached. This is deliberately long
+ * (not "real-time") — this tool is an affiliate price-comparison guide, not a live booking
+ * engine: the guest always clicks through to Booking.com to see the current price and
+ * complete the booking, so a same-day-old comparison price is a fine trade for making the
+ * request quota last far longer. Same/overlapping searches (same city + nearby dates,
+ * searched again by anyone) within this window cost nothing.
  */
-export const PRICE_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+export const PRICE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
