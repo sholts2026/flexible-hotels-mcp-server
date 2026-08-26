@@ -42,6 +42,20 @@ export async function getOrFetch<T>(key: string, ttlMs: number, fetchFn: () => P
   return { value, fromCache: false };
 }
 
+/**
+ * Reads a cached value without ever calling a fetch function — used to check "do we
+ * already know this?" before deciding whether it's worth attempting a live API call at
+ * all (e.g. once the API key's quota is known to be exhausted for this search, see
+ * hotelSearch.ts).
+ */
+export function peek<T>(key: string): T | undefined {
+  const existing = store.get(key);
+  if (existing && existing.expiresAt > Date.now()) {
+    return existing.value as T;
+  }
+  return undefined;
+}
+
 /** Current number of live (non-expired) entries — exposed for the /healthz diagnostic. */
 export function cacheSize(): number {
   const now = Date.now();

@@ -71,9 +71,11 @@ export function formatFlexibleSearchMarkdown(result: FlexibleSearchResult): stri
   }
 
   lines.push(`## ${result.mode === "priced" ? "Best offers (cheapest first)" : "Links by date"}`, "");
-  result.offers.forEach((offer, i) =>
-    lines.push(result.mode === "priced" ? formatPricedOfferLine(offer, i + 1) : formatLinkOnlyLine(offer, i + 1), ""),
-  );
+  // Picked per offer, not per result: in "priced" mode, a date whose live price lookup
+  // failed or ran out of quota falls back to a link-only entry (priceKnown: false) rather
+  // than being dropped — formatPricedOfferLine would print "undefined" for those, so route
+  // by the offer's own priceKnown flag instead of assuming the whole result is uniform.
+  result.offers.forEach((offer, i) => lines.push(offer.priceKnown ? formatPricedOfferLine(offer, i + 1) : formatLinkOnlyLine(offer, i + 1), ""));
 
   if (result.truncated) {
     lines.push(`_Showing ${result.offers.length} results; more were found — increase max_results to see them._`, "");

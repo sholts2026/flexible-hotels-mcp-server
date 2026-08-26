@@ -25,7 +25,7 @@ import { MAX_WINDOW_DAYS, REQUEST_THROTTLE_MS, DESTINATION_CACHE_TTL_MS, PRICE_C
 import type { HotelOfferRoom, FlexibleSearchResult } from "../types.js";
 import type { StayApiClient } from "./stayApiClient.js";
 import { buildBookingDestinationUrl, buildBookingUrl, appendAffiliateId } from "./affiliateLink.js";
-import { getOrFetch } from "./priceCache.js";
+import { getOrFetch, peek } from "./priceCache.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -82,6 +82,34 @@ export function buildCandidateCheckInDates(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Recognizes StayAPI's "out of credits" / rate-limit style failures, e.g. "402 You've used all your free credits." */
+function isQuotaExhaustedError(message: string): boolean {
+  return /credits|quota|402|429|rate.?limit/i.test(message);
+}
+
+/**
+ * Builds a graceful fallback offer for a candidate date whose live price lookup failed or
+ * was skipped (quota exhausted, transient API error, etc.) — a plain Booking.com
+ * destination-search link with no price attached, same shape as free "link-only" mode.
+ * This is what keeps a "priced" search useful even when some (or all) dates couldn't be
+ * priced: the guest always gets something to click, never a dead end.
+ */
+function buildFallbackOffer(params: FlexibleSearchParams, checkInDate: string, checkOutDate: string): HotelOfferRoom {
+  return {
+    checkInDate,
+    checkOutDate,
+    nights: params.nights,
+    priceKnown: false,
+    bookingUrl: buildBookingDestinationUrl({
+      destination: params.destination,
+      checkInDate,
+      checkOutDate,
+      adults: params.adults,
+      roomQuantity: params.roomQuantity,
+    }),
+  };
 }
 
 export interface FlexibleSearchParams {
@@ -155,40 +183,69 @@ async function searchWithStayApi(
   // Cached: a city's dest_id essentially never changes, so once resolved it's reused for
   // a week rather than spending a fresh request every single search.
   const destinationCacheKey = `dest:${params.destination.trim().toLowerCase()}`;
-  const { value: destination, fromCache: destinationFromCache } = await getOrFetch(
-    destinationCacheKey,
-    DESTINATION_CACHE_TTL_MS,
-    () => client.resolveDestination(params.destination),
-  );
+  let destination;
+  let destinationFromCache = false;
+  try {
+    ({ value: destination, fromCache: destinationFromCache } = await getOrFetch(destinationCacheKey, DESTINATION_CACHE_TTL_MS, () =>
+      client.resolveDestination(params.destination),
+    ));
+  } catch (error) {
+    // This is the very first StayAPI call a search makes — if the key/quota is dead, THIS
+    // is where it fails (e.g. "402 You've used all your free credits"). Rather than hard-
+    // erroring the whole search, fall all the way back to free link-only mode: every
+    // candidate date still gets a real, working Booking.com link, just no live price.
+    const result = searchLinkOnly(params);
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ...result, note: `Live prices unavailable (${reason}) — showing booking links instead.` };
+  }
   if (!destination) {
-    throw new Error(
-      `Could not resolve destination "${params.destination}" via StayAPI. Try a more specific or differently spelled place name.`,
-    );
+    // StayAPI understood the request but genuinely couldn't match this place name to a
+    // destination — same graceful fallback, since a plain destination-search link still
+    // works fine for whatever the guest typed.
+    const result = searchLinkOnly(params);
+    return {
+      ...result,
+      note: `Could not resolve "${params.destination}" to a specific destination — showing a general booking link for this search term instead. Try a more specific or differently spelled place name for live prices.`,
+    };
   }
 
   const allOffers: HotelOfferRoom[] = [];
   const skipped: { date: string; reason: string }[] = [];
+  const fallbackDates: string[] = [];
   let requestsSpent = destinationFromCache ? 0 : 1;
   let servedFromCache = destinationFromCache ? 1 : 0;
+  // Once one date's live call fails with a quota/rate-limit error, every remaining date
+  // would fail the exact same way — so stop attempting live calls for the rest of this
+  // search (still checking cache first) instead of burning time hammering a dead key.
+  let quotaExhausted = false;
 
   for (let i = 0; i < candidateDates.length; i++) {
     const checkInDate = candidateDates[i];
     const checkOutDate = addDays(checkInDate, params.nights);
     let madeLiveCall = false;
+    // Cached per exact (destination, dates, guests, currency) combo: the same or an
+    // overlapping search run again by anyone within the TTL window costs nothing.
+    const priceCacheKey = [
+      "price",
+      destination.destId,
+      destination.destType,
+      checkInDate,
+      checkOutDate,
+      params.adults,
+      params.roomQuantity,
+      params.currency ?? "default",
+      params.maxHotelsPerDate,
+    ].join("|");
+
+    if (quotaExhausted && peek(priceCacheKey) === undefined) {
+      // Already know this date can't be priced this search — skip straight to the
+      // graceful fallback below instead of attempting (and re-failing) a live call.
+      allOffers.push(buildFallbackOffer(params, checkInDate, checkOutDate));
+      fallbackDates.push(checkInDate);
+      continue;
+    }
+
     try {
-      // Cached per exact (destination, dates, guests, currency) combo: the same or an
-      // overlapping search run again by anyone within the TTL window costs nothing.
-      const priceCacheKey = [
-        "price",
-        destination.destId,
-        destination.destType,
-        checkInDate,
-        checkOutDate,
-        params.adults,
-        params.roomQuantity,
-        params.currency ?? "default",
-        params.maxHotelsPerDate,
-      ].join("|");
       const { value: hotels, fromCache: priceFromCache } = await getOrFetch(priceCacheKey, PRICE_CACHE_TTL_MS, () => {
         madeLiveCall = true;
         return client.searchHotels({
@@ -210,6 +267,8 @@ async function searchWithStayApi(
 
       if (hotels.length === 0) {
         skipped.push({ date: checkInDate, reason: "No available offers for this date" });
+        allOffers.push(buildFallbackOffer(params, checkInDate, checkOutDate));
+        fallbackDates.push(checkInDate);
         continue;
       }
 
@@ -255,10 +314,13 @@ async function searchWithStayApi(
       }
     } catch (error) {
       if (madeLiveCall) requestsSpent++;
-      skipped.push({
-        date: checkInDate,
-        reason: error instanceof Error ? error.message : String(error),
-      });
+      const reason = error instanceof Error ? error.message : String(error);
+      if (isQuotaExhaustedError(reason)) quotaExhausted = true;
+      skipped.push({ date: checkInDate, reason });
+      // Never leave a date as a dead end: fall back to a plain booking-search link (same
+      // as free link-only mode) instead of just dropping it.
+      allOffers.push(buildFallbackOffer(params, checkInDate, checkOutDate));
+      fallbackDates.push(checkInDate);
     }
 
     // Only throttle after a real API call — no reason to slow down cache hits.
@@ -271,10 +333,15 @@ async function searchWithStayApi(
 
   const truncated = allOffers.length > params.maxResults;
   const offers = allOffers.slice(0, params.maxResults);
+  // A STAYAPI_KEY is configured, but if every single offer ended up being a fallback (e.g.
+  // the quota was already dead before this search even started), report this result as
+  // link_only rather than priced — that's what it actually is, and it keeps the website's
+  // "sorted cheapest to priciest" summary line honest instead of overclaiming.
+  const anyPriceKnown = offers.some((o) => o.priceKnown);
 
   return {
     destination: params.destination,
-    mode: "priced",
+    mode: anyPriceKnown ? "priced" : "link_only",
     nights: params.nights,
     earliestCheckIn: params.earliestCheckIn,
     latestCheckIn: params.latestCheckIn,
@@ -284,10 +351,16 @@ async function searchWithStayApi(
     offers,
     cheapest: offers[0] ?? null,
     truncated,
-    note:
+    note: [
       servedFromCache > 0
         ? `${requestsSpent} live StayAPI request(s) spent; ${servedFromCache} were served from cache (free, no quota used).`
         : `${requestsSpent} live StayAPI request(s) spent (none of this search was cached yet).`,
+      fallbackDates.length > 0
+        ? `${fallbackDates.length} of ${candidateDates.length} date(s) couldn't be priced${quotaExhausted ? " (API quota appears exhausted)" : ""} and fell back to a plain booking link instead.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
   };
 }
 
