@@ -21,10 +21,11 @@
  *    but this mode has no quota and never breaks.
  */
 
-import { MAX_WINDOW_DAYS, REQUEST_THROTTLE_MS } from "../constants.js";
+import { MAX_WINDOW_DAYS, REQUEST_THROTTLE_MS, DESTINATION_CACHE_TTL_MS, PRICE_CACHE_TTL_MS } from "../constants.js";
 import type { HotelOfferRoom, FlexibleSearchResult } from "../types.js";
 import type { StayApiClient } from "./stayApiClient.js";
 import { buildBookingDestinationUrl, buildBookingUrl, appendAffiliateId } from "./affiliateLink.js";
+import { getOrFetch } from "./priceCache.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -151,7 +152,14 @@ async function searchWithStayApi(
 ): Promise<FlexibleSearchResult> {
   const candidateDates = buildCandidateCheckInDates(params.earliestCheckIn, params.latestCheckIn);
 
-  const destination = await client.resolveDestination(params.destination);
+  // Cached: a city's dest_id essentially never changes, so once resolved it's reused for
+  // a week rather than spending a fresh request every single search.
+  const destinationCacheKey = `dest:${params.destination.trim().toLowerCase()}`;
+  const { value: destination, fromCache: destinationFromCache } = await getOrFetch(
+    destinationCacheKey,
+    DESTINATION_CACHE_TTL_MS,
+    () => client.resolveDestination(params.destination),
+  );
   if (!destination) {
     throw new Error(
       `Could not resolve destination "${params.destination}" via StayAPI. Try a more specific or differently spelled place name.`,
@@ -160,21 +168,45 @@ async function searchWithStayApi(
 
   const allOffers: HotelOfferRoom[] = [];
   const skipped: { date: string; reason: string }[] = [];
+  let requestsSpent = destinationFromCache ? 0 : 1;
+  let servedFromCache = destinationFromCache ? 1 : 0;
 
   for (let i = 0; i < candidateDates.length; i++) {
     const checkInDate = candidateDates[i];
     const checkOutDate = addDays(checkInDate, params.nights);
+    let madeLiveCall = false;
     try {
-      const hotels = await client.searchHotels({
-        destId: destination.destId,
-        destType: destination.destType,
-        checkin: checkInDate,
-        checkout: checkOutDate,
-        adults: params.adults,
-        rooms: params.roomQuantity,
-        currency: params.currency,
-        rowsPerPage: params.maxHotelsPerDate,
+      // Cached per exact (destination, dates, guests, currency) combo: the same or an
+      // overlapping search run again by anyone within the TTL window costs nothing.
+      const priceCacheKey = [
+        "price",
+        destination.destId,
+        destination.destType,
+        checkInDate,
+        checkOutDate,
+        params.adults,
+        params.roomQuantity,
+        params.currency ?? "default",
+        params.maxHotelsPerDate,
+      ].join("|");
+      const { value: hotels, fromCache: priceFromCache } = await getOrFetch(priceCacheKey, PRICE_CACHE_TTL_MS, () => {
+        madeLiveCall = true;
+        return client.searchHotels({
+          destId: destination.destId,
+          destType: destination.destType,
+          checkin: checkInDate,
+          checkout: checkOutDate,
+          adults: params.adults,
+          rooms: params.roomQuantity,
+          currency: params.currency,
+          rowsPerPage: params.maxHotelsPerDate,
+        });
       });
+      if (priceFromCache) {
+        servedFromCache++;
+      } else {
+        requestsSpent++;
+      }
 
       if (hotels.length === 0) {
         skipped.push({ date: checkInDate, reason: "No available offers for this date" });
@@ -222,13 +254,15 @@ async function searchWithStayApi(
         });
       }
     } catch (error) {
+      if (madeLiveCall) requestsSpent++;
       skipped.push({
         date: checkInDate,
         reason: error instanceof Error ? error.message : String(error),
       });
     }
 
-    if (i < candidateDates.length - 1) {
+    // Only throttle after a real API call — no reason to slow down cache hits.
+    if (madeLiveCall && i < candidateDates.length - 1) {
       await sleep(REQUEST_THROTTLE_MS);
     }
   }
@@ -250,7 +284,10 @@ async function searchWithStayApi(
     offers,
     cheapest: offers[0] ?? null,
     truncated,
-    note: `Used ${candidateDates.length + 1} StayAPI request(s) (1 destination lookup + ${candidateDates.length} date scan(s)) against your free-trial quota.`,
+    note:
+      servedFromCache > 0
+        ? `${requestsSpent} live StayAPI request(s) spent; ${servedFromCache} were served from cache (free, no quota used).`
+        : `${requestsSpent} live StayAPI request(s) spent (none of this search was cached yet).`,
   };
 }
 
