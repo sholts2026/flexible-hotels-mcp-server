@@ -137,8 +137,110 @@ test("searchFlexibleHotelOffers (priced mode) records skipped dates instead of f
   });
 
   assert.equal(result.datesSkipped.length, 2);
-  assert.equal(result.offers.length, 1);
+  // The 2 dates that couldn't be priced (one API error, one empty result) no longer just
+  // vanish — each falls back to a plain, priceKnown:false booking link instead, so the
+  // guest always has something to click. Only the 1 real StayAPI price is priceKnown:true.
+  assert.equal(result.offers.length, 3);
+  const priced = result.offers.filter((o) => o.priceKnown);
+  const fallback = result.offers.filter((o) => !o.priceKnown);
+  assert.equal(priced.length, 1);
+  assert.equal(fallback.length, 2);
+  assert.deepEqual(
+    fallback.map((o) => o.checkInDate).sort(),
+    ["2026-09-01", "2026-09-02"],
+  );
+  for (const offer of fallback) {
+    assert.ok(offer.bookingUrl.startsWith("https://www.booking.com/searchresults.html?"));
+  }
   assert.equal(result.cheapest?.checkInDate, "2026-09-03");
+  // Since a real price WAS found for at least one date, the result is still reported as
+  // "priced" mode overall (not downgraded to link_only).
+  assert.equal(result.mode, "priced");
+});
+
+test("searchFlexibleHotelOffers (priced mode, quota exhausted at the destination-resolve step — matches today's real StayAPI outage) falls back to link-only instead of throwing", async () => {
+  const client = {
+    resolveDestination: async () => {
+      throw new Error("StayAPI request to /booking/destinations/lookup failed: 402 You've used all your free credits. Upgrade to keep going.");
+    },
+    searchHotels: async () => {
+      throw new Error("should never be called — destination resolution already failed");
+    },
+  } as unknown as StayApiClient;
+
+  const result = await searchFlexibleHotelOffers(client, {
+    destination: "Tel Aviv",
+    nights: 1,
+    earliestCheckIn: "2026-11-01",
+    latestCheckIn: "2026-11-03",
+    adults: 2,
+    roomQuantity: 1,
+    maxHotelsPerDate: 15,
+    maxResults: 10,
+  });
+
+  assert.equal(result.mode, "link_only");
+  assert.equal(result.offers.length, 3);
+  assert.ok(result.offers.every((o) => !o.priceKnown && o.bookingUrl.startsWith("https://www.booking.com/searchresults.html?")));
+  assert.match(result.note ?? "", /Live prices unavailable/);
+});
+
+test("searchFlexibleHotelOffers (priced mode) falls back to a generic booking link when the destination genuinely can't be resolved", async () => {
+  const client = {
+    resolveDestination: async () => null,
+    searchHotels: async () => {
+      throw new Error("should never be called");
+    },
+  } as unknown as StayApiClient;
+
+  const result = await searchFlexibleHotelOffers(client, {
+    destination: "Nowhereville Xyzzy",
+    nights: 1,
+    earliestCheckIn: "2026-11-01",
+    latestCheckIn: "2026-11-01",
+    adults: 2,
+    roomQuantity: 1,
+    maxHotelsPerDate: 15,
+    maxResults: 10,
+  });
+
+  assert.equal(result.mode, "link_only");
+  assert.equal(result.offers.length, 1);
+  assert.match(result.note ?? "", /Could not resolve/);
+});
+
+test("searchFlexibleHotelOffers (priced mode, quota exhausted) degrades gracefully to link-only offers instead of erroring, and stops hammering the dead API after the first failure", async () => {
+  let searchCalls = 0;
+  const client = {
+    resolveDestination: async (query: string) => ({ query, destId: 777, destType: "CITY", normalizedQuery: query, suggestions: [] }),
+    searchHotels: async () => {
+      searchCalls++;
+      throw new Error("402 You've used all your free credits. Upgrade to keep going.");
+    },
+  } as unknown as StayApiClient;
+
+  const result = await searchFlexibleHotelOffers(client, {
+    destination: "Paris",
+    nights: 1,
+    earliestCheckIn: "2026-11-01",
+    latestCheckIn: "2026-11-05",
+    adults: 2,
+    roomQuantity: 1,
+    maxHotelsPerDate: 15,
+    maxResults: 10,
+  });
+
+  // Every candidate date still gets an offer (a plain booking link), never a dead end,
+  // even though the underlying API call failed every time.
+  assert.equal(result.offers.length, 5);
+  assert.ok(result.offers.every((o) => !o.priceKnown));
+  // No real price was ever found, so this is honestly reported as link_only, not priced.
+  assert.equal(result.mode, "link_only");
+  // The fast path: only the FIRST date should have actually called the (broken) API — once
+  // a quota-exhausted-style error is seen, the rest should skip straight to the fallback
+  // instead of repeating a call that's guaranteed to fail again.
+  assert.equal(searchCalls, 1);
+  assert.match(result.note ?? "", /quota appears exhausted/);
 });
 
 test("searchFlexibleHotelOffers (priced mode) respects max_results and sets truncated", async () => {
