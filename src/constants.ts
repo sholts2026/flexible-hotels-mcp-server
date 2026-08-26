@@ -34,3 +34,18 @@ export const DESTINATION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  * searched again by anyone) within this window cost nothing.
  */
 export const PRICE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Maximum number of LIVE StayAPI price calls a single flexible search will make,
+ * regardless of how many candidate dates are in the requested window. Without this cap, a
+ * single visitor searching a full 30-day window could spend up to 30 requests in one
+ * search — on a paid plan with a monthly cap (e.g. 1,500/month), a handful of visitors
+ * searching different destinations could burn through the entire month's quota in minutes.
+ *
+ * With the cap, only this many dates — spread as evenly as possible across the full
+ * requested window — get a real live price lookup; every other date still gets a real,
+ * working Booking.com link (same graceful fallback used for quota exhaustion), just
+ * without a price shown on our site. This keeps the cost of any single search bounded and
+ * predictable while still covering the entire date range the guest asked about.
+ */
+export const MAX_LIVE_PRICE_CALLS_PER_SEARCH = 10;
