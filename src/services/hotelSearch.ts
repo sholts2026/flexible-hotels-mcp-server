@@ -24,7 +24,7 @@
 import { MAX_WINDOW_DAYS, REQUEST_THROTTLE_MS } from "../constants.js";
 import type { HotelOfferRoom, FlexibleSearchResult } from "../types.js";
 import type { StayApiClient } from "./stayApiClient.js";
-import { buildBookingDestinationUrl, appendAffiliateId } from "./affiliateLink.js";
+import { buildBookingDestinationUrl, buildBookingUrl, appendAffiliateId } from "./affiliateLink.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -196,15 +196,29 @@ async function searchWithStayApi(
           reviewScore: hotel.reviewScore,
           reviewCount: hotel.reviewCount,
           address: hotel.address,
+          // StayAPI's live response doesn't actually include a per-hotel `url` (see the
+          // note in stayApiClient.ts), so this almost always falls through to building a
+          // Booking.com link scoped to this exact hotel name (not just the destination),
+          // with the right dates — that's what lets the click-through land on the right
+          // hotel instead of a generic city-wide search results page.
           bookingUrl: hotel.url
             ? appendAffiliateId(hotel.url)
-            : buildBookingDestinationUrl({
-                destination: params.destination,
-                checkInDate,
-                checkOutDate,
-                adults: params.adults,
-                roomQuantity: params.roomQuantity,
-              }),
+            : hotel.hotelName
+              ? buildBookingUrl({
+                  hotelName: hotel.hotelName,
+                  cityCode: params.destination,
+                  checkInDate,
+                  checkOutDate,
+                  adults: params.adults,
+                  roomQuantity: params.roomQuantity,
+                })
+              : buildBookingDestinationUrl({
+                  destination: params.destination,
+                  checkInDate,
+                  checkOutDate,
+                  adults: params.adults,
+                  roomQuantity: params.roomQuantity,
+                }),
         });
       }
     } catch (error) {
