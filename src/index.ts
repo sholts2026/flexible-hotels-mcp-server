@@ -33,6 +33,7 @@ import { StayApiClient } from "./services/stayApiClient.js";
 import { registerResolveDestinationTool } from "./tools/resolveDestination.js";
 import { registerSearchFlexibleOffersTool } from "./tools/searchFlexibleOffers.js";
 import { registerWebApi } from "./webApi.js";
+import { cacheSize } from "./services/priceCache.js";
 
 // dist/index.js -> ../public is the project-root `public/` folder, regardless of
 // the process's current working directory (Render/Docker always run from repo root
@@ -87,7 +88,14 @@ async function runHttp(client: StayApiClient | null): Promise<void> {
   // Plain health check for the hosting platform (Render/Railway) — separate from
   // the MCP endpoint itself, which only accepts POST per the streamable HTTP spec.
   app.get("/healthz", (_req, res) => {
-        res.status(200).json({ status: "ok", server: "flexible-hotels-mcp-server", mode: client ? "priced" : "link_only" });
+        res.status(200).json({
+          status: "ok",
+          server: "flexible-hotels-mcp-server",
+          mode: client ? "priced" : "link_only",
+          // How many destination/date price lookups are currently cached in memory — see
+          // src/services/priceCache.ts. Handy to eyeball that the cache is actually filling up.
+          cachedEntries: cacheSize(),
+        });
   });
 
   // Human-facing search website (public/index.html) + its small JSON REST API.
