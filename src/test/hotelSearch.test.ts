@@ -173,6 +173,59 @@ test("searchFlexibleHotelOffers (priced mode) attaches a working booking_url to 
   assert.ok(offer.bookingUrl.startsWith("https://www.booking.com/hotel/test.html"));
 });
 
+/**
+ * StayAPI's real live response has no per-hotel `url` field at all (see the note in
+ * stayApiClient.ts) — this mirrors that shape, unlike fakeClient() above.
+ */
+function fakeClientNoHotelUrl(pricesByDate: Record<string, number>): StayApiClient {
+  return {
+    resolveDestination: async (query: string) => ({
+      query,
+      destId: -1,
+      destType: "CITY",
+      normalizedQuery: query,
+      suggestions: [],
+    }),
+    searchHotels: async ({ checkin }: { checkin: string }) => {
+      const price = pricesByDate[checkin];
+      if (price === undefined) return [];
+      return [
+        {
+          hotelId: "HTEST2",
+          hotelName: "Sea Tower by Isrotel Design",
+          minTotalPrice: price,
+          currencyCode: "USD",
+        },
+      ];
+    },
+  } as unknown as StayApiClient;
+}
+
+test("searchFlexibleHotelOffers (priced mode, hotel has no direct url — the real StayAPI shape) builds a booking_url scoped to that hotel's name, not a generic destination search", async () => {
+  const client = fakeClientNoHotelUrl({ "2026-09-01": 150 });
+
+  const result = await searchFlexibleHotelOffers(client, {
+    destination: "Tel Aviv",
+    nights: 1,
+    earliestCheckIn: "2026-09-01",
+    latestCheckIn: "2026-09-01",
+    adults: 2,
+    roomQuantity: 1,
+    maxHotelsPerDate: 15,
+    maxResults: 10,
+  });
+
+  const offer = result.offers[0];
+  const url = new URL(offer.bookingUrl);
+  assert.equal(url.origin + url.pathname, "https://www.booking.com/searchresults.html");
+  // The critical regression check: the search string must include the specific hotel's
+  // name (not just the destination), and the exact dates — otherwise the click-through
+  // lands the guest on a generic city-wide search page instead of this hotel.
+  assert.ok(url.searchParams.get("ss")?.includes("Sea Tower by Isrotel Design"));
+  assert.equal(url.searchParams.get("checkin"), "2026-09-01");
+  assert.equal(url.searchParams.get("checkout"), "2026-09-02");
+});
+
 test("searchFlexibleHotelOffers (link-only mode, no client) returns one link per date with no price data", async () => {
   const result = await searchFlexibleHotelOffers(null, {
     destination: "Tel Aviv",
