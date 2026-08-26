@@ -6,7 +6,7 @@
  * Run with: npm run build && npm test
  */
 
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   addDays,
@@ -15,7 +15,15 @@ import {
   searchFlexibleHotelOffers,
 } from "../services/hotelSearch.js";
 import { buildBookingUrl, buildBookingDestinationUrl } from "../services/affiliateLink.js";
+import { clearCache } from "../services/priceCache.js";
 import type { StayApiClient } from "../services/stayApiClient.js";
+
+// Every fakeClient() in this file resolves to the same dest_id (-1), so without resetting
+// the (production) cache between tests, one test's cached prices would leak into the next
+// test that happens to search the same dates/guest-count — clear it before every test.
+beforeEach(() => {
+  clearCache();
+});
 
 test("addDays adds calendar days correctly, including month/year rollover", () => {
   assert.equal(addDays("2026-09-01", 3), "2026-09-04");
@@ -171,6 +179,47 @@ test("searchFlexibleHotelOffers (priced mode) attaches a working booking_url to 
 
   const offer = result.offers[0];
   assert.ok(offer.bookingUrl.startsWith("https://www.booking.com/hotel/test.html"));
+});
+
+test("searchFlexibleHotelOffers (priced mode) reuses cached results for a repeated search instead of spending quota again", async () => {
+  let resolveCalls = 0;
+  let searchCalls = 0;
+  const client = {
+    resolveDestination: async (query: string) => {
+      resolveCalls++;
+      return { query, destId: 555, destType: "CITY", normalizedQuery: query, suggestions: [] };
+    },
+    searchHotels: async () => {
+      searchCalls++;
+      return [
+        { hotelId: "HCACHE1", hotelName: "Cache Test Hotel", url: "https://www.booking.com/hotel/cache.html", minTotalPrice: 200, currencyCode: "USD" },
+      ];
+    },
+  } as unknown as StayApiClient;
+
+  const searchParams = {
+    destination: "Cache City",
+    nights: 1,
+    earliestCheckIn: "2026-10-01",
+    latestCheckIn: "2026-10-01",
+    adults: 2,
+    roomQuantity: 1,
+    maxHotelsPerDate: 15,
+    maxResults: 10,
+  };
+
+  const first = await searchFlexibleHotelOffers(client, searchParams);
+  assert.equal(resolveCalls, 1);
+  assert.equal(searchCalls, 1);
+  assert.match(first.note ?? "", /2 live StayAPI request/);
+
+  // Same destination + same date + same guest count, searched again (e.g. by a different
+  // visitor) — must NOT call the fake API a second time, and the note should say so.
+  const second = await searchFlexibleHotelOffers(client, searchParams);
+  assert.equal(resolveCalls, 1, "destination resolve should be served from cache, not called again");
+  assert.equal(searchCalls, 1, "hotel price search should be served from cache, not called again");
+  assert.match(second.note ?? "", /0 live StayAPI request.*2 were served from cache/);
+  assert.equal(second.offers[0]?.totalPrice, 200);
 });
 
 /**
